@@ -1,0 +1,58 @@
+{
+  "name": "pear-sync",
+  "displayName": "Pear Sync",
+  "description": "Real-time P2P folder sync using Hyperswarm and Autobase",
+  "version": "0.0.1",
+  "icon": "icon.png",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "pear-sync",
+          "title": "Pear Sync",
+          "icon": "icon.png"
+        }
+      ]
+    },
+    "views": {
+      "pear-sync": [
+        {
+          "id": "pear-sync.statusView",
+          "name": "Status"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "pear-sync.start",
+        "title": "Pear Sync: Start New Session"
+      },
+      {
+        "command": "pear-sync.join",
+        "title": "Pear Sync: Join Session"
+      },
+      {
+        "command": "pear-sync.stop",
+        "title": "Pear Sync: Stop Session"
+      },
+      {
+        "command": "pear-sync.clearStore",
+        "title": "Pear Sync: Clear Store (fix lock errors)"
+      }
+    ]
+  },
+  "dependencies": {
+    "autobase": "^7.0.0",
+    "b4a": "^1.6.0",
+    "chokidar": "^3.6.0",
+    "compact-encoding": "^2.15.0",
+    "corestore": "^7.0.0",
+    "hyperbee": "^2.22.0",
+    "hyperswarm": "^4.8.0",
+    "protomux": "^3.6.0"
+  }
+}
