@@ -52,7 +52,7 @@ interface Session {
   color: string;
   peers: Map<string, PeerState>;
   docs: Map<string, DocEntry>;
-  suppressedFiles: Set<string>;
+  suppressedFiles: Map<string, number>;
   colorIdx: number;
 }
 
@@ -68,6 +68,23 @@ let pendingBroadcastUpdates = new Map<string, Buffer>();
 let lastPresenceSend = 0;
 let msgId = 0;
 let ignoreFilter: ReturnType<typeof ignore> | null = null;
+
+// ── Suppression helpers (ref-counted to handle concurrent async applies) ───────
+function suppressFile(filePath: string): void {
+  if (!session) return;
+  session.suppressedFiles.set(filePath, (session.suppressedFiles.get(filePath) ?? 0) + 1);
+}
+
+function unsuppressFile(filePath: string): void {
+  if (!session) return;
+  const n = session.suppressedFiles.get(filePath) ?? 0;
+  if (n <= 1) session.suppressedFiles.delete(filePath);
+  else session.suppressedFiles.set(filePath, n - 1);
+}
+
+function isFileSuppressed(filePath: string): boolean {
+  return (session?.suppressedFiles.get(filePath) ?? 0) > 0;
+}
 
 // ── IPC ────────────────────────────────────────────────────────────────────────
 function sendToSidecar(obj: object) {
@@ -264,15 +281,15 @@ async function applyRemoteDeltaToEditor(filePath: string, ytext: Y.Text) {
   // Open and show the document if not already visible
   let doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === abs);
   if (!doc) {
-    session?.suppressedFiles.add(filePath);
+    suppressFile(filePath);
     doc = await vscode.workspace.openTextDocument(uri);
     await vscode.window.showTextDocument(doc, { preview: false });
-    session?.suppressedFiles.delete(filePath);
+    unsuppressFile(filePath);
   }
 
   if (doc.getText() === newContent) return;
 
-  session?.suppressedFiles.add(filePath);
+  suppressFile(filePath);
   try {
     const edit = new vscode.WorkspaceEdit();
     const fullRange = new vscode.Range(
@@ -282,7 +299,7 @@ async function applyRemoteDeltaToEditor(filePath: string, ytext: Y.Text) {
     edit.replace(doc.uri, fullRange, newContent);
     await vscode.workspace.applyEdit(edit);
   } finally {
-    session?.suppressedFiles.delete(filePath);
+    unsuppressFile(filePath);
   }
 }
 
@@ -292,7 +309,7 @@ function onDocumentChange(event: vscode.TextDocumentChangeEvent) {
   if (event.contentChanges.length === 0) return;
   const filePath = getRelativePath(event.document.uri);
   if (!filePath) return;
-  if (session.suppressedFiles.has(filePath)) return;
+  if (isFileSuppressed(filePath)) return;
   if (isFileExcluded(filePath)) return;
 
   const entry = getOrCreateDoc(filePath);
@@ -563,7 +580,7 @@ async function beginSession(
     color: PEER_COLORS[Math.floor(Math.random() * PEER_COLORS.length)],
     peers: new Map(),
     docs: new Map(),
-    suppressedFiles: new Set(),
+    suppressedFiles: new Map(),
     colorIdx: 0,
   };
 
