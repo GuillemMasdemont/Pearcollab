@@ -1,0 +1,47 @@
+{
+  "name": "pear-collab",
+  "displayName": "Pear Collab",
+  "description": "P2P collaboration inside VS Code powered by Hyperswarm",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pearCollab.connect",
+        "title": "Pear: Connect to Room"
+      },
+      {
+        "command": "pearCollab.disconnect",
+        "title": "Pear: Disconnect"
+      },
+      {
+        "command": "pearCollab.broadcast",
+        "title": "Pear: Broadcast Message"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run bundle",
+    "bundle": "node esbuild.js --production",
+    "bundle:dev": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "compile": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "b4a": "^1.8.0",
+    "hypercore-crypto": "^3.6.1",
+    "hyperswarm": "^4.17.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0"
+  }
+}
