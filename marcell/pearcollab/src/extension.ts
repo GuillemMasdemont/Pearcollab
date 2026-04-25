@@ -241,10 +241,10 @@ function getOrCreateDoc(filePath: string, initialContent?: string): DocEntry {
     debounce('doc:' + filePath, () => flushDocUpdate(filePath), DEBOUNCE_MS);
   });
 
-  // Apply remote changes to the open editor
+  // Apply remote changes to the open editor using the precise Yjs delta
   text.observe((event: Y.YTextEvent) => {
     if (event.transaction.origin !== 'remote') return;
-    applyRemoteDeltaToEditor(filePath, text);
+    applyRemoteDeltaToEditor(filePath, text, event.delta);
   });
 
   const entry: DocEntry = { doc, text };
@@ -259,13 +259,18 @@ function flushDocUpdate(filePath: string) {
   callSidecar('doc.update', { filePath, update: buf.toString('base64') });
 }
 
-async function applyRemoteDeltaToEditor(filePath: string, ytext: Y.Text) {
+async function applyRemoteDeltaToEditor(
+  filePath: string,
+  ytext: Y.Text,
+  delta: Array<{ retain?: number; insert?: string | object; delete?: number }>
+) {
   const abs = getAbsPath(filePath);
   if (!abs) return;
 
   const newContent = ytext.toString();
+  const uri = vscode.Uri.file(abs);
 
-  // Create the file on disk if it doesn't exist yet
+  // New file: create on disk and open — VS Code reads the correct content from disk.
   if (!fs.existsSync(abs)) {
     try {
       fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -274,30 +279,70 @@ async function applyRemoteDeltaToEditor(filePath: string, ytext: Y.Text) {
       console.error('[PearCollab] Failed to create file:', filePath, e);
       return;
     }
-  }
-
-  const uri = vscode.Uri.file(abs);
-
-  // Open and show the document if not already visible
-  let doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === abs);
-  if (!doc) {
     suppressFile(filePath);
-    doc = await vscode.workspace.openTextDocument(uri);
-    await vscode.window.showTextDocument(doc, { preview: false });
-    unsuppressFile(filePath);
+    try {
+      const d = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(d, { preview: false });
+    } finally {
+      unsuppressFile(filePath);
+    }
+    return; // disk content already matches Yjs state
   }
 
-  if (doc.getText() === newContent) return;
+  // Ensure the document is open in VS Code.
+  let vsDoc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === abs);
+  if (!vsDoc) {
+    suppressFile(filePath);
+    vsDoc = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(vsDoc, { preview: false });
+    unsuppressFile(filePath);
+    // After opening, if VS Code content already matches Yjs (e.g. read from disk) we're done.
+    if (vsDoc.getText() === newContent) return;
+    // Disk diverged from Yjs — fall through to full replace below.
+    delta = [{ delete: vsDoc.getText().length }, { insert: newContent }];
+  }
+
+  // Translate the Yjs delta into VS Code edits.
+  // Consecutive inserts before a delete (or at end) are collapsed into a single replace
+  // so VS Code gets one unambiguous operation per changed region.
+  type Chunk = { startOffset: number; endOffset: number; newText: string };
+  const chunks: Chunk[] = [];
+  let offset = 0;
+  let pendingInsert = '';
+
+  const flushInsert = () => {
+    if (!pendingInsert) return;
+    chunks.push({ startOffset: offset, endOffset: offset, newText: pendingInsert });
+    pendingInsert = '';
+  };
+
+  for (const op of delta) {
+    if (op.retain !== undefined) {
+      flushInsert();
+      offset += op.retain;
+    } else if (op.insert !== undefined) {
+      pendingInsert += typeof op.insert === 'string' ? op.insert : '';
+    } else if (op.delete !== undefined) {
+      // Combine a pending insert + this delete into a single replace chunk.
+      chunks.push({ startOffset: offset, endOffset: offset + op.delete, newText: pendingInsert });
+      pendingInsert = '';
+      offset += op.delete;
+    }
+  }
+  flushInsert();
+
+  if (chunks.length === 0) return;
+
+  const workEdit = new vscode.WorkspaceEdit();
+  for (const { startOffset, endOffset, newText } of chunks) {
+    const startPos = vsDoc.positionAt(startOffset);
+    const endPos   = vsDoc.positionAt(endOffset);
+    workEdit.replace(vsDoc.uri, new vscode.Range(startPos, endPos), newText);
+  }
 
   suppressFile(filePath);
   try {
-    const edit = new vscode.WorkspaceEdit();
-    const fullRange = new vscode.Range(
-      doc.positionAt(0),
-      doc.positionAt(doc.getText().length)
-    );
-    edit.replace(doc.uri, fullRange, newContent);
-    await vscode.workspace.applyEdit(edit);
+    await vscode.workspace.applyEdit(workEdit);
   } finally {
     unsuppressFile(filePath);
   }
