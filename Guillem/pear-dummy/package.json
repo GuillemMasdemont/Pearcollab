@@ -1,0 +1,15 @@
+{
+  "name": "pear-dummy",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "pear": {
+    "name": "pear-dummy",
+    "type": "terminal"
+  },
+  "dependencies": {
+    "b4a": "^1.8.0",
+    "hypercore-crypto": "^3.6.1",
+    "hyperswarm": "^4.17.0"
+  }
+}
