@@ -2,28 +2,16 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "watch",
-      "type": "shell",
-      "command": "npm run watch",
+      "type": "npm",
+      "script": "compile",
       "group": {
         "kind": "build",
         "isDefault": true
       },
       "presentation": {
-        "reveal": "never"
-      },
-      "isBackground": true,
-      "problemMatcher": "$esbuild-watch"
-    },
-    {
-      "label": "bundle",
-      "type": "shell",
-      "command": "npm run bundle:dev",
-      "group": "build",
-      "presentation": {
         "reveal": "silent"
       },
-      "problemMatcher": []
+      "problemMatcher": ["$tsc"]
     }
   ]
 }
