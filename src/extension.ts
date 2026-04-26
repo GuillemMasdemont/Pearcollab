@@ -65,7 +65,6 @@ let statusBar: vscode.StatusBarItem;
 let sidebarProvider: SidebarProvider;
 let debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let pendingBroadcastUpdates = new Map<string, Buffer>();
-let applyQueues = new Map<string, Promise<void>>();
 let lastPresenceSend = 0;
 let msgId = 0;
 let ignoreFilter: ReturnType<typeof ignore> | null = null;
@@ -242,16 +241,10 @@ function getOrCreateDoc(filePath: string, initialContent?: string): DocEntry {
     debounce('doc:' + filePath, () => flushDocUpdate(filePath), DEBOUNCE_MS);
   });
 
-  // Apply remote changes to the open editor using the precise Yjs delta.
-  // Calls are serialized per file so each delta is applied against the correct VS Code state.
+  // Apply remote changes to the open editor
   text.observe((event: Y.YTextEvent) => {
     if (event.transaction.origin !== 'remote') return;
-    const delta = event.delta;
-    const prev = applyQueues.get(filePath) ?? Promise.resolve();
-    const next = prev
-      .then(() => applyRemoteDeltaToEditor(filePath, text, delta))
-      .catch(e => console.error('[PearCollab] applyRemoteDelta failed:', e));
-    applyQueues.set(filePath, next);
+    applyRemoteDeltaToEditor(filePath, text);
   });
 
   const entry: DocEntry = { doc, text };
@@ -266,18 +259,13 @@ function flushDocUpdate(filePath: string) {
   callSidecar('doc.update', { filePath, update: buf.toString('base64') });
 }
 
-async function applyRemoteDeltaToEditor(
-  filePath: string,
-  ytext: Y.Text,
-  delta: Array<{ retain?: number; insert?: string | object; delete?: number }>
-) {
+async function applyRemoteDeltaToEditor(filePath: string, ytext: Y.Text) {
   const abs = getAbsPath(filePath);
   if (!abs) return;
 
   const newContent = ytext.toString();
-  const uri = vscode.Uri.file(abs);
 
-  // New file: create on disk and open — VS Code reads the correct content from disk.
+  // Create the file on disk if it doesn't exist yet
   if (!fs.existsSync(abs)) {
     try {
       fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -286,70 +274,30 @@ async function applyRemoteDeltaToEditor(
       console.error('[PearCollab] Failed to create file:', filePath, e);
       return;
     }
-    suppressFile(filePath);
-    try {
-      const d = await vscode.workspace.openTextDocument(uri);
-      await vscode.window.showTextDocument(d, { preview: false });
-    } finally {
-      unsuppressFile(filePath);
-    }
-    return; // disk content already matches Yjs state
   }
 
-  // Ensure the document is open in VS Code.
-  let vsDoc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === abs);
-  if (!vsDoc) {
+  const uri = vscode.Uri.file(abs);
+
+  // Open and show the document if not already visible
+  let doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === abs);
+  if (!doc) {
     suppressFile(filePath);
-    vsDoc = await vscode.workspace.openTextDocument(uri);
-    await vscode.window.showTextDocument(vsDoc, { preview: false });
+    doc = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(doc, { preview: false });
     unsuppressFile(filePath);
-    // After opening, if VS Code content already matches Yjs (e.g. read from disk) we're done.
-    if (vsDoc.getText() === newContent) return;
-    // Disk diverged from Yjs — fall through to full replace below.
-    delta = [{ delete: vsDoc.getText().length }, { insert: newContent }];
   }
 
-  // Translate the Yjs delta into VS Code edits.
-  // Consecutive inserts before a delete (or at end) are collapsed into a single replace
-  // so VS Code gets one unambiguous operation per changed region.
-  type Chunk = { startOffset: number; endOffset: number; newText: string };
-  const chunks: Chunk[] = [];
-  let offset = 0;
-  let pendingInsert = '';
-
-  const flushInsert = () => {
-    if (!pendingInsert) return;
-    chunks.push({ startOffset: offset, endOffset: offset, newText: pendingInsert });
-    pendingInsert = '';
-  };
-
-  for (const op of delta) {
-    if (op.retain !== undefined) {
-      flushInsert();
-      offset += op.retain;
-    } else if (op.insert !== undefined) {
-      pendingInsert += typeof op.insert === 'string' ? op.insert : '';
-    } else if (op.delete !== undefined) {
-      // Combine a pending insert + this delete into a single replace chunk.
-      chunks.push({ startOffset: offset, endOffset: offset + op.delete, newText: pendingInsert });
-      pendingInsert = '';
-      offset += op.delete;
-    }
-  }
-  flushInsert();
-
-  if (chunks.length === 0) return;
-
-  const workEdit = new vscode.WorkspaceEdit();
-  for (const { startOffset, endOffset, newText } of chunks) {
-    const startPos = vsDoc.positionAt(startOffset);
-    const endPos   = vsDoc.positionAt(endOffset);
-    workEdit.replace(vsDoc.uri, new vscode.Range(startPos, endPos), newText);
-  }
+  if (doc.getText() === newContent) return;
 
   suppressFile(filePath);
   try {
-    await vscode.workspace.applyEdit(workEdit);
+    const edit = new vscode.WorkspaceEdit();
+    const fullRange = new vscode.Range(
+      doc.positionAt(0),
+      doc.positionAt(doc.getText().length)
+    );
+    edit.replace(doc.uri, fullRange, newContent);
+    await vscode.workspace.applyEdit(edit);
   } finally {
     unsuppressFile(filePath);
   }
@@ -365,11 +313,8 @@ function onDocumentChange(event: vscode.TextDocumentChangeEvent) {
   if (isFileExcluded(filePath)) return;
 
   const entry = getOrCreateDoc(filePath);
-  // Sort descending by offset: process end→start so earlier offsets stay valid
-  // when multiple changes arrive (e.g. multi-cursor edits).
-  const changes = [...event.contentChanges].sort((a, b) => b.rangeOffset - a.rangeOffset);
   entry.doc.transact(() => {
-    for (const change of changes) {
+    for (const change of event.contentChanges) {
       if (change.rangeLength > 0) {
         entry.text.delete(change.rangeOffset, change.rangeLength);
       }
@@ -672,7 +617,6 @@ function endSessionInternal() {
   debounceTimers.forEach(t => clearTimeout(t));
   debounceTimers.clear();
   pendingBroadcastUpdates.clear();
-  applyQueues.clear();
 
   updateStatusBar();
   sidebarProvider.refresh(null);
