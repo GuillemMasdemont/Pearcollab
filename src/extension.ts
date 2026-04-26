@@ -50,6 +50,7 @@ interface Session {
   roomName: string;
   displayName: string;
   color: string;
+  isHost: boolean;
   peers: Map<string, PeerState>;
   docs: Map<string, DocEntry>;
   suppressedFiles: Map<string, number>;
@@ -567,7 +568,8 @@ async function spawnSidecar(context: vscode.ExtensionContext): Promise<void> {
 async function beginSession(
   roomName: string,
   displayName: string,
-  context: vscode.ExtensionContext
+  context: vscode.ExtensionContext,
+  isHost: boolean
 ) {
   if (session) {
     vscode.window.showWarningMessage('PearCollab: A session is already active. End it first.');
@@ -578,6 +580,7 @@ async function beginSession(
     roomName,
     displayName,
     color: PEER_COLORS[Math.floor(Math.random() * PEER_COLORS.length)],
+    isHost,
     peers: new Map(),
     docs: new Map(),
     suppressedFiles: new Map(),
@@ -602,6 +605,7 @@ async function beginSession(
   }
 
   callSidecar('session.start', { roomName, displayName });
+  sidebarProvider.refresh(session);
 }
 
 function endSessionInternal() {
@@ -642,7 +646,7 @@ async function cmdStartSession(context: vscode.ExtensionContext) {
   });
   if (!roomName) return;
 
-  await beginSession(roomName.trim(), displayName, context);
+  await beginSession(roomName.trim(), displayName, context, true);
 
   // Seed every eligible file in the workspace into Yjs so peers receive
   // the full folder state when they connect.
@@ -671,7 +675,7 @@ async function cmdJoinSession(context: vscode.ExtensionContext) {
   });
   if (!roomName) return;
 
-  await beginSession(roomName.trim(), displayName, context);
+  await beginSession(roomName.trim(), displayName, context, false);
 
   // Seed any locally existing files so Yjs can merge them with the
   // remote state when the host sends its full doc updates.
@@ -797,6 +801,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         case 'joinSession':   vscode.commands.executeCommand('pearcollab.joinSession'); break;
         case 'copyRoomName':  vscode.commands.executeCommand('pearcollab.copyRoomName'); break;
         case 'endSession':    vscode.commands.executeCommand('pearcollab.endSession'); break;
+        case 'ready':         this.refresh(session); break;
       }
     });
   }
@@ -813,7 +818,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     this._view.webview.postMessage({
       type: 'update',
       session: sess
-        ? { roomName: sess.roomName, displayName: sess.displayName, color: sess.color, peers }
+        ? { roomName: sess.roomName, displayName: sess.displayName, color: sess.color, isHost: sess.isHost, peers }
         : null,
     });
   }
@@ -921,6 +926,22 @@ class SidebarProvider implements vscode.WebviewViewProvider {
   .self-peer { opacity: 0.7; }
   .waiting { color: var(--vscode-descriptionForeground); font-style: italic; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .role-badge {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 600;
+  }
+  .role-host {
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+  }
+  .role-guest {
+    background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+  }
 </style>
 </head>
 <body>
@@ -934,7 +955,10 @@ class SidebarProvider implements vscode.WebviewViewProvider {
 </div>
 <div id="session">
   <div>
-    <div class="label">Room</div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+      <div class="label" style="margin-bottom:0">Room</div>
+      <span class="role-badge" id="role-badge"></span>
+    </div>
     <div class="room-row">
       <span class="room-name" id="room-name"></span>
       <button onclick="vscode.postMessage({command:'copyRoomName'})">Copy</button>
@@ -948,6 +972,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
 </div>
 <script>
   const vscode = acquireVsCodeApi();
+  vscode.postMessage({ command: 'ready' });
   window.addEventListener('message', e => {
     const { type, session } = e.data;
     if (type !== 'update') return;
@@ -956,6 +981,15 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     if (!session) return;
 
     document.getElementById('room-name').textContent = session.roomName;
+
+    const badge = document.getElementById('role-badge');
+    if (session.isHost) {
+      badge.textContent = 'Created';
+      badge.className = 'role-badge role-host';
+    } else {
+      badge.textContent = 'Joined';
+      badge.className = 'role-badge role-guest';
+    }
 
     const list = document.getElementById('peer-list');
     list.innerHTML = '';
