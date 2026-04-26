@@ -8,6 +8,7 @@ const readline = require('readline');
 // ── State ──────────────────────────────────────────────────────────────────────
 let swarm = null;
 let ownDisplayName = 'Unknown';
+let ownToken = null;
 // peerId -> { mux, docCh, docMsg, presCh, presMsg, displayName }
 const peers = new Map();
 
@@ -103,12 +104,11 @@ function setupConnection(socket) {
     }
   });
 
-  // Handshake channel for display name exchange
+  // Handshake channel for display name + token exchange
   const handshakeCh = mux.createChannel({
     protocol: 'pear-collab/v1/handshake',
     onopen() {
-      // Send our display name
-      handshakeMsg.send(Buffer.from(JSON.stringify({ displayName: ownDisplayName }), 'utf8'));
+      handshakeMsg.send(Buffer.from(JSON.stringify({ displayName: ownDisplayName, token: ownToken }), 'utf8'));
     },
     onclose() {}
   });
@@ -117,6 +117,14 @@ function setupConnection(socket) {
     onmessage(buf) {
       try {
         const data = JSON.parse(buf.toString('utf8'));
+        const normalize = t => (t || '').replace(/[-\s]/g, '').toUpperCase();
+        if (ownToken && normalize(data.token) !== normalize(ownToken)) {
+          notify('error', { code: 'AUTH_FAILED', message: 'Peer rejected: invalid token' });
+          try { socket.destroy(); } catch (_) {}
+          const peerId = getPeerIdByMux(mux);
+          if (peerId) peers.delete(peerId);
+          return;
+        }
         const peerId = getPeerIdByMux(mux);
         if (peerId && peers.has(peerId)) {
           peers.get(peerId).displayName = data.displayName || 'Unknown';
@@ -161,12 +169,13 @@ function updateNetworkStatus() {
 }
 
 // ── Session management ────────────────────────────────────────────────────────
-async function startSession(roomName, displayName, id) {
+async function startSession(roomName, displayName, token, id) {
   if (swarm) {
     await endSession();
   }
 
   ownDisplayName = displayName;
+  ownToken = token || null;
 
   try {
     swarm = new Hyperswarm();
@@ -207,6 +216,7 @@ async function endSession(id) {
     } catch (_) {}
   }
   peers.clear();
+  ownToken = null;
 
   if (swarm) {
     try { await swarm.destroy(); } catch (_) {}
@@ -259,7 +269,7 @@ rl.on('line', line => {
 
   switch (method) {
     case 'session.start':
-      startSession(params.roomName, params.displayName, id);
+      startSession(params.roomName, params.displayName, params.token, id);
       break;
     case 'session.end':
       endSession(id);

@@ -51,10 +51,22 @@ interface Session {
   displayName: string;
   color: string;
   isHost: boolean;
+  token: string;
   peers: Map<string, PeerState>;
   docs: Map<string, DocEntry>;
   suppressedFiles: Map<string, number>;
   colorIdx: number;
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function generateToken(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const part = (n: number) => Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  return `${part(4)}-${part(4)}`;
+}
+
+function normalizeToken(t: string): string {
+  return t.replace(/[-\s]/g, '').toUpperCase();
 }
 
 // ── Module-level state ─────────────────────────────────────────────────────────
@@ -569,7 +581,8 @@ async function beginSession(
   roomName: string,
   displayName: string,
   context: vscode.ExtensionContext,
-  isHost: boolean
+  isHost: boolean,
+  token: string
 ) {
   if (session) {
     vscode.window.showWarningMessage('PearCollab: A session is already active. End it first.');
@@ -581,6 +594,7 @@ async function beginSession(
     displayName,
     color: PEER_COLORS[Math.floor(Math.random() * PEER_COLORS.length)],
     isHost,
+    token,
     peers: new Map(),
     docs: new Map(),
     suppressedFiles: new Map(),
@@ -604,7 +618,7 @@ async function beginSession(
     await spawnSidecar(context);
   }
 
-  callSidecar('session.start', { roomName, displayName });
+  callSidecar('session.start', { roomName, displayName, token });
   sidebarProvider.refresh(session);
 }
 
@@ -646,20 +660,35 @@ async function cmdStartSession(context: vscode.ExtensionContext) {
   });
   if (!roomName) return;
 
-  await beginSession(roomName.trim(), displayName, context, true);
+  const token = generateToken();
+  await beginSession(roomName.trim(), displayName, context, true, token);
 
   // Seed every eligible file in the workspace into Yjs so peers receive
   // the full folder state when they connect.
   const count = seedWorkspaceFiles(root);
   vscode.window.showInformationMessage(
-    `PearCollab: Session started. Sharing ${count} file${count !== 1 ? 's' : ''} — room "${roomName.trim()}".`
-  );
+    `PearCollab: Session started — room "${roomName.trim()}". Token: ${token}`,
+    'Copy Token'
+  ).then(action => {
+    if (action === 'Copy Token') vscode.env.clipboard.writeText(token);
+  });
 }
 
 async function cmdJoinSession(context: vscode.ExtensionContext) {
   const root = getWorkspaceRoot();
   if (!root) {
     vscode.window.showErrorMessage('PearCollab: Open a folder first before joining a session.');
+    return;
+  }
+
+  // Workspace must be empty so the host's files sync cleanly
+  const nonHidden = fs.readdirSync(root).filter(n => !n.startsWith('.'));
+  if (nonHidden.length > 0) {
+    const action = await vscode.window.showErrorMessage(
+      'PearCollab: The workspace folder must be empty before joining a session.',
+      'Open Folder…'
+    );
+    if (action === 'Open Folder…') vscode.commands.executeCommand('vscode.openFolder');
     return;
   }
 
@@ -675,11 +704,17 @@ async function cmdJoinSession(context: vscode.ExtensionContext) {
   });
   if (!roomName) return;
 
-  await beginSession(roomName.trim(), displayName, context, false);
+  const tokenRaw = await vscode.window.showInputBox({
+    prompt: 'Enter the session token shared by the host',
+    placeHolder: 'ABCD-1234',
+    validateInput: v => normalizeToken(v || '').length < 8
+      ? 'Token must be 8 characters (e.g. ABCD-1234).'
+      : undefined,
+  });
+  if (!tokenRaw) return;
 
-  // Seed any locally existing files so Yjs can merge them with the
-  // remote state when the host sends its full doc updates.
-  // Files that only exist on the host will be created via applyRemoteDeltaToEditor.
+  const token = tokenRaw.trim().toUpperCase();
+  await beginSession(roomName.trim(), displayName, context, false, token);
   seedWorkspaceFiles(root);
 }
 
@@ -801,6 +836,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         case 'joinSession':   vscode.commands.executeCommand('pearcollab.joinSession'); break;
         case 'copyRoomName':  vscode.commands.executeCommand('pearcollab.copyRoomName'); break;
         case 'endSession':    vscode.commands.executeCommand('pearcollab.endSession'); break;
+        case 'copyToken':     if (session?.token) vscode.env.clipboard.writeText(session.token); break;
         case 'ready':         this.refresh(session); break;
       }
     });
@@ -818,7 +854,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     this._view.webview.postMessage({
       type: 'update',
       session: sess
-        ? { roomName: sess.roomName, displayName: sess.displayName, color: sess.color, isHost: sess.isHost, peers }
+        ? { roomName: sess.roomName, displayName: sess.displayName, color: sess.color, isHost: sess.isHost, token: sess.isHost ? sess.token : undefined, peers }
         : null,
     });
   }
@@ -1035,6 +1071,14 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       <button onclick="vscode.postMessage({command:'copyRoomName'})">Copy</button>
     </div>
   </div>
+  <div id="token-section" style="display:none">
+    <div class="label">Session Token</div>
+    <div class="room-row">
+      <span class="room-name" id="session-token" style="letter-spacing:0.12em"></span>
+      <button onclick="vscode.postMessage({command:'copyToken'})">Copy</button>
+    </div>
+    <p style="margin:4px 0 0;font-size:11px;color:var(--vscode-descriptionForeground)">Share with collaborators to let them join</p>
+  </div>
   <div>
     <div class="label">Peers</div>
     <div class="peer-list" id="peer-list"></div>
@@ -1060,6 +1104,14 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     } else {
       badge.textContent = 'Joined';
       badge.className = 'role-badge role-guest';
+    }
+
+    const tokenSection = document.getElementById('token-section');
+    if (session.token) {
+      tokenSection.style.display = 'block';
+      document.getElementById('session-token').textContent = session.token;
+    } else {
+      tokenSection.style.display = 'none';
     }
 
     const list = document.getElementById('peer-list');
