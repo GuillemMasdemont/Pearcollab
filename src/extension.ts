@@ -846,8 +846,66 @@ class SidebarProvider implements vscode.WebviewViewProvider {
   #no-session {
     display: flex;
     flex-direction: column;
-    gap: var(--gap);
-    align-items: flex-start;
+    align-items: stretch;
+    gap: 16px;
+    padding: 4px 0;
+  }
+  .hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 24px 8px 4px;
+    text-align: center;
+  }
+  .hero-icon-wrap {
+    width: 56px;
+    height: 56px;
+    border-radius: 16px;
+    background: var(--vscode-button-background);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.85;
+  }
+  .hero-title {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    color: var(--vscode-foreground);
+  }
+  .hero-subtitle {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+    line-height: 1.5;
+    margin: 0;
+  }
+  .no-session-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .btn-full {
+    width: 100%;
+    padding: 7px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 6px;
+    box-sizing: border-box;
+  }
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+  }
+  .divider::before, .divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--vscode-widget-border, var(--vscode-panel-border));
+    opacity: 0.5;
   }
   #session {
     display: none;
@@ -883,7 +941,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     color: var(--vscode-button-foreground);
     border: none;
     border-radius: var(--radius);
-    padding: 3px 8px;
+    padding: 4px 10px;
     cursor: pointer;
     font-size: 11px;
     white-space: nowrap;
@@ -946,11 +1004,24 @@ class SidebarProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
 <div id="no-session">
-  <div class="label">PearCollab</div>
-  <p style="margin:0;color:var(--vscode-descriptionForeground)">No active session.</p>
-  <div class="actions">
-    <button onclick="vscode.postMessage({command:'startSession'})">Start Session</button>
-    <button class="secondary" onclick="vscode.postMessage({command:'joinSession'})">Join Session</button>
+  <div class="hero">
+    <div class="hero-icon-wrap">
+      <svg width="30" height="30" viewBox="0 0 30 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="8" cy="15" r="4.5" fill="white" opacity="0.9"/>
+        <circle cx="22" cy="15" r="4.5" fill="white" opacity="0.9"/>
+        <path d="M12.5 15 Q15 10 17.5 15 Q15 20 12.5 15Z" fill="white" opacity="0.5"/>
+        <line x1="12.5" y1="15" x2="17.5" y2="15" stroke="white" stroke-width="1.5" opacity="0.6"/>
+        <circle cx="8" cy="15" r="2" fill="white"/>
+        <circle cx="22" cy="15" r="2" fill="white"/>
+      </svg>
+    </div>
+    <div class="hero-title">PearCollab</div>
+    <p class="hero-subtitle">Real-time peer-to-peer<br>collaborative editing</p>
+  </div>
+  <div class="no-session-actions">
+    <button class="btn-full" onclick="vscode.postMessage({command:'startSession'})">Start Session</button>
+    <div class="divider"><span>or</span></div>
+    <button class="btn-full secondary" onclick="vscode.postMessage({command:'joinSession'})">Join Existing Session</button>
   </div>
 </div>
 <div id="session">
